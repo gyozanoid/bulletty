@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use color_eyre::Result;
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{
@@ -252,10 +252,23 @@ impl AppScreen for ReaderScreen {
     fn handle_event(&mut self, event: Event) -> Result<AppScreenEvent> {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_keypress(key),
-            Event::Mouse(_) => Ok(AppScreenEvent::None),
+            Event::Mouse(mouse_event) => self.handle_mouse(mouse_event),
             Event::Resize(_, _) => Ok(AppScreenEvent::None),
             _ => Ok(AppScreenEvent::None),
         }
+    }
+
+    fn handle_mouse(&mut self, event: MouseEvent) -> Result<AppScreenEvent> {
+        match event.kind {
+            MouseEventKind::ScrollDown => {
+                self.scrolldown();
+            },
+            MouseEventKind::ScrollUp => {
+                self.scrollup();
+            },
+            _ => {}
+        }
+        Ok(AppScreenEvent::None)
     }
 
     fn handle_keypress(
