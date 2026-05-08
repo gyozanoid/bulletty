@@ -262,10 +262,10 @@ impl AppScreen for ReaderScreen {
         match event.kind {
             MouseEventKind::ScrollDown => {
                 self.scrolldown();
-            },
+            }
             MouseEventKind::ScrollUp => {
                 self.scrollup();
-            },
+            }
             _ => {}
         }
         Ok(AppScreenEvent::None)
