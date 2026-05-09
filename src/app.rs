@@ -228,11 +228,10 @@ impl App {
                 })?;
 
                 // Checking the dialog or the state events
-                let event_available =
-                    crossterm::event::poll(self.event_poll_timeout).unwrap_or(true);
-                if event_available {
+                if let Ok(event_available) = crossterm::event::poll(self.event_poll_timeout)
+                    && event_available
+                {
                     let terminal_event = crossterm::event::read()?;
-
                     let screen = if let Some(dialog) = self.dialog_queue.get_mut(0) {
                         dialog.as_screen_mut()
                     } else {

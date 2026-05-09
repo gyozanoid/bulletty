@@ -17,7 +17,7 @@ pub enum FeedItemInfo {
 
 pub struct FeedTreeState {
     pub treeitems: Vec<FeedItemInfo>,
-    pub listatate: ListState,
+    pub list_state: ListState,
     last_generation: u64,
     unread_counts: HashMap<(String, String), u16>,
     read_later_count: usize,
@@ -33,7 +33,7 @@ impl FeedTreeState {
     pub fn new() -> Self {
         Self {
             treeitems: vec![],
-            listatate: ListState::default().with_selected(Some(0)),
+            list_state: ListState::default().with_selected(Some(0)),
             last_generation: u64::MAX,
             unread_counts: HashMap::new(),
             read_later_count: 0,
@@ -114,7 +114,7 @@ impl FeedTreeState {
 
     pub fn get_selected(&self) -> Option<&FeedItemInfo> {
         if !self.treeitems.is_empty() {
-            let idx = self.listatate.selected().unwrap_or(0);
+            let idx = self.list_state.selected().unwrap_or(0);
             let clamped = idx.min(self.treeitems.len().saturating_sub(1));
             Some(&self.treeitems[clamped])
         } else {
@@ -127,9 +127,9 @@ impl FeedTreeState {
             return;
         }
 
-        let selected = self.listatate.selected().unwrap_or(0);
+        let selected = self.list_state.selected().unwrap_or(0);
         if selected < self.treeitems.len().saturating_sub(1) {
-            self.listatate.select_next();
+            self.list_state.select_next();
 
             if self.is_selected_separator() {
                 self.select_next();
@@ -142,16 +142,16 @@ impl FeedTreeState {
             return;
         }
 
-        let selected = self.listatate.selected().unwrap_or(0);
+        let selected = self.list_state.selected().unwrap_or(0);
         if selected >= self.treeitems.len() {
-            self.listatate
+            self.list_state
                 .select(Some(self.treeitems.len().saturating_sub(1)));
         }
 
-        let selected = self.listatate.selected().unwrap_or(0);
+        let selected = self.list_state.selected().unwrap_or(0);
 
         if selected > 0 {
-            self.listatate.select_previous();
+            self.list_state.select_previous();
             if self.is_selected_separator() {
                 self.select_previous();
             }
@@ -163,7 +163,7 @@ impl FeedTreeState {
             return;
         }
 
-        self.listatate.select_first();
+        self.list_state.select_first();
     }
 
     pub fn select_last(&mut self) {
@@ -171,35 +171,61 @@ impl FeedTreeState {
             return;
         }
 
-        self.listatate
+        self.list_state
             .select(Some(self.treeitems.len().saturating_sub(1)));
     }
 
     pub fn select_next_category(&mut self) {
-        let current = self.listatate.selected().unwrap_or(0);
+        let current = self.list_state.selected().unwrap_or(0);
         for (i, item) in self.treeitems.iter().enumerate().skip(current + 1) {
             if matches!(item, FeedItemInfo::Category(_) | FeedItemInfo::ReadLater) {
-                self.listatate.select(Some(i));
+                self.list_state.select(Some(i));
                 return;
             }
         }
     }
 
     pub fn select_previous_category(&mut self) {
-        let current = self.listatate.selected().unwrap_or(0);
+        let current = self.list_state.selected().unwrap_or(0);
         for (i, item) in self.treeitems.iter().enumerate().take(current).rev() {
             if matches!(item, FeedItemInfo::Category(_) | FeedItemInfo::ReadLater) {
-                self.listatate.select(Some(i));
+                self.list_state.select(Some(i));
                 return;
             }
         }
     }
 
     fn is_selected_separator(&self) -> bool {
-        if let Some(index) = self.listatate.selected() {
+        if let Some(index) = self.list_state.selected() {
             index < self.treeitems.len() && matches!(self.treeitems[index], FeedItemInfo::Separator)
         } else {
             false
+        }
+    }
+
+    pub fn scroll_by(&mut self, scroll_by: isize) {
+        if self.treeitems.is_empty() {
+            return;
+        }
+
+        let scroll_by_u = scroll_by.abs() as usize;
+        let current_offset = self.list_state.offset().clone();
+
+        self.list_state.select(None);
+
+        *self.list_state.offset_mut() = if scroll_by < 0 {
+            current_offset.saturating_sub(scroll_by_u)
+        } else {
+            self.treeitems
+                .len()
+                .saturating_sub(1)
+                .min(current_offset + scroll_by_u)
+        };
+    }
+
+    pub fn select(&mut self, index: usize) {
+        if index < self.treeitems.len() {
+            self.list_state.select(Some(index));
         }
     }
 }

@@ -17,7 +17,7 @@ use crate::{
 
 pub struct FeedEntryState {
     pub entries: Vec<FeedEntry>,
-    pub listatate: ListState,
+    pub list_state: ListState,
     pub previous_selected: String,
     theme: Theme,
     last_generation: u64,
@@ -34,7 +34,7 @@ impl FeedEntryState {
     pub fn new() -> Self {
         Self {
             entries: vec![],
-            listatate: ListState::default().with_selected(Some(0)),
+            list_state: ListState::default().with_selected(Some(0)),
             previous_selected: String::new(),
             theme: Theme::default(),
             last_generation: u64::MAX,
@@ -98,7 +98,7 @@ impl FeedEntryState {
         }
 
         if selection_changed {
-            self.listatate.select_first();
+            self.list_state.select_first();
         }
     }
 
@@ -159,7 +159,7 @@ impl FeedEntryState {
     }
 
     pub fn get_selected(&self) -> Option<FeedEntry> {
-        match self.listatate.selected() {
+        match self.list_state.selected() {
             None => None,
             Some(selected) => {
                 if selected < self.entries.len() {
@@ -172,7 +172,7 @@ impl FeedEntryState {
     }
 
     pub fn set_current_read(&mut self) {
-        if let Some(selected) = self.listatate.selected()
+        if let Some(selected) = self.list_state.selected()
             && selected < self.entries.len()
         {
             self.entries[selected].seen = true;
@@ -184,8 +184,8 @@ impl FeedEntryState {
             return;
         }
 
-        if self.listatate.selected().unwrap_or(0) < self.entries.len().saturating_sub(1) {
-            self.listatate.select_next();
+        if self.list_state.selected().unwrap_or(0) < self.entries.len().saturating_sub(1) {
+            self.list_state.select_next();
         }
     }
 
@@ -194,8 +194,8 @@ impl FeedEntryState {
             return;
         }
 
-        if self.listatate.selected().unwrap_or(0) > 0 {
-            self.listatate.select_previous();
+        if self.list_state.selected().unwrap_or(0) > 0 {
+            self.list_state.select_previous();
         }
     }
 
@@ -204,7 +204,7 @@ impl FeedEntryState {
             return;
         }
 
-        self.listatate.select_first();
+        self.list_state.select_first();
     }
 
     pub fn select_last(&mut self) {
@@ -212,7 +212,7 @@ impl FeedEntryState {
             return;
         }
 
-        self.listatate
+        self.list_state
             .select(Some(self.entries.len().saturating_sub(1)));
     }
 
@@ -221,6 +221,32 @@ impl FeedEntryState {
     }
 
     pub fn scroll(&self) -> usize {
-        self.listatate.selected().unwrap_or(0)
+        self.list_state.selected().unwrap_or(0)
+    }
+
+    pub fn scroll_by(&mut self, scroll_by: isize) {
+        if self.entries.is_empty() {
+            return;
+        }
+
+        let scroll_by_u = scroll_by.abs() as usize;
+        let current_offset = self.list_state.offset().clone();
+
+        self.list_state.select(None);
+
+        *self.list_state.offset_mut() = if scroll_by < 0 {
+            current_offset.saturating_sub(scroll_by_u)
+        } else {
+            self.entries
+                .len()
+                .saturating_sub(1)
+                .min(current_offset + scroll_by_u)
+        };
+    }
+
+    pub fn select(&mut self, index: usize) {
+        if index < self.entries.len() {
+            self.list_state.select(Some(index));
+        }
     }
 }

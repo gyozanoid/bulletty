@@ -1,7 +1,9 @@
 use std::{cell::RefCell, rc::Rc};
 
 use color_eyre::Result;
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent};
+use crossterm::event::{
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
@@ -27,6 +29,7 @@ use crate::{
             feedentrystate::FeedEntryState,
             feedtreestate::{FeedItemInfo, FeedTreeState},
         },
+        tools::mouse::find_mouse,
     },
 };
 
@@ -44,6 +47,7 @@ pub struct MainScreen {
     feedentrystate: FeedEntryState,
     inputstate: MainInputState,
     hooks: Rc<AppHooks>,
+    layout: Rc<[Rect]>,
 }
 
 impl MainScreen {
@@ -54,6 +58,7 @@ impl MainScreen {
             feedentrystate: FeedEntryState::new(),
             inputstate: MainInputState::Menu,
             hooks,
+            layout: Rc::default(),
         }
     }
 
@@ -161,6 +166,22 @@ impl MainScreen {
             .min(100);
         l.settings.appearance.save()
     }
+
+    fn calculate_layout(&mut self, area: Rect) {
+        let treewidth = self
+            .library
+            .borrow()
+            .settings
+            .appearance
+            .main_screen_tree_width;
+
+        self.layout = Layout::horizontal([
+            Constraint::Min(treewidth),
+            Constraint::Percentage(85),
+            Constraint::Length(1),
+        ])
+        .split(area)
+    }
 }
 
 impl AppScreen for MainScreen {
@@ -182,19 +203,7 @@ impl AppScreen for MainScreen {
             library.settings.get_theme().unwrap().clone()
         };
 
-        let treewidth = self
-            .library
-            .borrow()
-            .settings
-            .appearance
-            .main_screen_tree_width;
-
-        let chunks = Layout::horizontal([
-            Constraint::Min(treewidth),
-            Constraint::Percentage(85),
-            Constraint::Length(1),
-        ])
-        .split(area);
+        self.calculate_layout(area);
 
         // Feed tree
         self.feedtreestate.update(&mut self.library.borrow_mut());
@@ -225,14 +234,14 @@ impl AppScreen for MainScreen {
             .block(treestyle)
             .highlight_style(treeselectionstyle);
 
-        let mut treestate = self.feedtreestate.listatate;
-        frame.render_stateful_widget(treelist, chunks[0], &mut treestate);
+        let mut treestate = self.feedtreestate.list_state;
+        frame.render_stateful_widget(treelist, self.layout[0], &mut treestate);
 
         // The feed entries
         self.feedentrystate
             .update(&mut self.library.borrow_mut(), &self.feedtreestate);
 
-        let mut entryliststate = self.feedentrystate.listatate;
+        let mut entryliststate = self.feedentrystate.list_state;
 
         let entryselectionstyle = if self.inputstate == MainInputState::Content {
             Style::default()
@@ -250,7 +259,7 @@ impl AppScreen for MainScreen {
             )
             .highlight_style(entryselectionstyle);
 
-        frame.render_stateful_widget(list_widget, chunks[1], &mut entryliststate);
+        frame.render_stateful_widget(list_widget, self.layout[1], &mut entryliststate);
 
         // Scrollbar
         let mut scrollbarstate = ScrollbarState::new(self.feedentrystate.scroll_max())
@@ -260,7 +269,7 @@ impl AppScreen for MainScreen {
                 .fg(Color::from_u32(theme.base[3]))
                 .bg(Color::from_u32(theme.base[2])),
         );
-        frame.render_stateful_widget(scrollbar, chunks[2], &mut scrollbarstate);
+        frame.render_stateful_widget(scrollbar, self.layout[2], &mut scrollbarstate);
     }
 
     fn handle_event(&mut self, event: Event) -> Result<AppScreenEvent> {
@@ -272,7 +281,41 @@ impl AppScreen for MainScreen {
         }
     }
 
-    fn handle_mouse(&mut self, _event: MouseEvent) -> Result<AppScreenEvent> {
+    fn handle_mouse(&mut self, mouse_event: MouseEvent) -> Result<AppScreenEvent> {
+        match find_mouse(&mouse_event, &self.layout) {
+            Some(0) /*Feed List*/ => {
+                match mouse_event.kind {
+                    MouseEventKind::ScrollDown => { self.feedtreestate.scroll_by(1); },
+                    MouseEventKind::ScrollUp => { self.feedtreestate.scroll_by(-1); },
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        self.inputstate = MainInputState::Menu;
+                        let list_widget_padding = 2;
+                        let click_idx = usize::from(mouse_event.row.saturating_sub(&self.layout[0].top() + list_widget_padding));
+                        let current_offset = self.feedtreestate.list_state.offset();
+                        self.feedtreestate.select(click_idx + current_offset);
+                    },
+                    _ => {},
+                }
+            },
+            Some(1) /*Content List*/ => {
+                match mouse_event.kind {
+                    MouseEventKind::ScrollDown => { self.feedentrystate.scroll_by(1); },
+                    MouseEventKind::ScrollUp => { self.feedentrystate.scroll_by(-1); },
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        self.inputstate = MainInputState::Content;
+                        let list_widget_padding = 2;
+                        let list_widget_line_size = 5;
+                        let click_idx = usize::from(mouse_event.row.saturating_sub(&self.layout[1].top() + list_widget_padding));
+                        let current_offset = self.feedentrystate.list_state.offset();
+                        self.feedentrystate.select(click_idx.saturating_div(list_widget_line_size) + current_offset);
+                    },
+                    _ => {},
+                }
+            },
+            Some(2) /*Scrollbar*/ => {},
+            None => {},
+            _ => {},
+        }
         Ok(AppScreenEvent::None)
     }
 
@@ -330,6 +373,17 @@ impl AppScreen for MainScreen {
                 (_, KeyCode::Char('?')) => Ok(AppScreenEvent::OpenDialog(Box::new(
                     HelpDialog::new(self.library.clone(), self.get_full_instructions()),
                 ))),
+
+                // @TODO: remember to remove these!
+                (_, KeyCode::Char('J')) => {
+                    self.feedtreestate.scroll_by(1);
+                    Ok(AppScreenEvent::None)
+                }
+                (_, KeyCode::Char('K')) => {
+                    self.feedtreestate.scroll_by(-1);
+                    Ok(AppScreenEvent::None)
+                }
+
                 _ => Ok(AppScreenEvent::None),
             },
             MainInputState::Content => match (key.modifiers, key.code) {
@@ -369,7 +423,7 @@ impl AppScreen for MainScreen {
                         Ok(AppScreenEvent::ChangeState(Box::new(ReaderScreen::new(
                             self.library.clone(),
                             self.feedentrystate.entries.clone(),
-                            self.feedentrystate.listatate.selected().unwrap_or(0),
+                            self.feedentrystate.list_state.selected().unwrap_or(0),
                             self.hooks.clone(),
                         ))))
                     } else {
