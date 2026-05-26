@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::time::Instant;
 
 use ratatui::{
     style::{Color, Style},
@@ -15,13 +16,29 @@ use crate::{
     ui::states::feedtreestate::{FeedItemInfo, FeedTreeState},
 };
 
+#[derive(Debug)]
+enum ScrollMeasureMode {
+    Keyboard,
+    Mouse,
+}
+
+// @TODO: FeedTreeState and FeedEntryState are pretty similar...
+// how much could we put into a trait for them both to share?
 pub struct FeedEntryState {
     pub entries: Vec<FeedEntry>,
     pub list_state: ListState,
     pub previous_selected: String,
+
+    // maybe these should be in MainScreen?
+    // or maybe better to encapsulate things into a MouseAwareList trait
+    pub last_click: Option<Instant>,
+    pub visible_lines: usize,
+
     theme: Theme,
     last_generation: u64,
     read_later_paths: HashSet<String>,
+    selected: Option<usize>,
+    scroll_measure: ScrollMeasureMode,
 }
 
 impl Default for FeedEntryState {
@@ -38,7 +55,11 @@ impl FeedEntryState {
             previous_selected: String::new(),
             theme: Theme::default(),
             last_generation: u64::MAX,
+            last_click: None,
             read_later_paths: HashSet::new(),
+            visible_lines: 0,
+            selected: Some(0),
+            scroll_measure: ScrollMeasureMode::Keyboard,
         }
     }
 
@@ -98,7 +119,7 @@ impl FeedEntryState {
         }
 
         if selection_changed {
-            self.list_state.select_first();
+            self.select_first();
         }
     }
 
@@ -159,16 +180,13 @@ impl FeedEntryState {
     }
 
     pub fn get_selected(&self) -> Option<FeedEntry> {
-        match self.list_state.selected() {
-            None => None,
-            Some(selected) => {
-                if selected < self.entries.len() {
-                    Some(self.entries[selected].clone())
-                } else {
-                    None
-                }
-            }
+        if let Some(idx) = self.list_state.selected().or(self.selected)
+            && let Some(entry) = self.entries.get(idx)
+        {
+            return Some(entry.clone());
         }
+
+        None
     }
 
     pub fn set_current_read(&mut self) {
@@ -179,14 +197,63 @@ impl FeedEntryState {
         }
     }
 
+    fn update_list_offset(&mut self) {
+        // still overshooting the offset when going to first and last
+        // first is one too high,
+
+        let current_offset = self.list_state.offset();
+        let current_selection = self.list_state.selected();
+
+        let mut next_offset = match current_selection {
+            Some(idx) if idx < current_offset => idx,
+            Some(idx)
+                if idx > current_offset.saturating_add(self.visible_lines.saturating_sub(1)) =>
+            {
+                idx.saturating_sub(self.visible_lines.saturating_sub(1))
+            }
+            _ => current_offset,
+        }
+        .min(self.max_offset());
+
+        // offset "jump" behavior (i.e. select_next() after mousewheel scroll)
+        // center the selection, favor the higher when visible_lines is even
+        if next_offset.abs_diff(current_offset) > 1
+            && next_offset > self.visible_lines.saturating_div(2)
+        {
+            if let Some(idx) = current_selection {
+                next_offset = idx.saturating_sub(self.visible_lines.saturating_div(2));
+                if next_offset > self.visible_lines.saturating_sub(1) {
+                    next_offset = next_offset
+                        .saturating_add(self.visible_lines.saturating_add(1) % 2)
+                        .min(self.max_offset());
+                }
+            }
+        };
+
+        *self.list_state.offset_mut() = next_offset;
+    }
+
     pub fn select_next(&mut self) {
         if self.entries.is_empty() {
             return;
         }
 
-        if self.list_state.selected().unwrap_or(0) < self.entries.len().saturating_sub(1) {
-            self.list_state.select_next();
+        let selected = self
+            .list_state
+            .selected()
+            .unwrap_or(self.selected.unwrap_or(0));
+
+        if selected >= self.entries.len() {
+            self.select_last();
+            return;
         }
+
+        // List::list_state.offset is retained, but gets adjusted temporarily
+        // on render to get the selected item in view
+
+        self.list_state.select(Some(selected));
+        self.list_state.select_next();
+        self.update_list_offset();
     }
 
     pub fn select_previous(&mut self) {
@@ -194,8 +261,17 @@ impl FeedEntryState {
             return;
         }
 
-        if self.list_state.selected().unwrap_or(0) > 0 {
+        let selected = self
+            .list_state
+            .selected()
+            .unwrap_or(self.selected.unwrap_or(0));
+
+        if selected >= self.entries.len() {
+            self.select_last();
+        } else {
+            self.list_state.select(Some(selected));
             self.list_state.select_previous();
+            self.update_list_offset();
         }
     }
 
@@ -205,6 +281,7 @@ impl FeedEntryState {
         }
 
         self.list_state.select_first();
+        self.update_list_offset();
     }
 
     pub fn select_last(&mut self) {
@@ -212,41 +289,79 @@ impl FeedEntryState {
             return;
         }
 
+        *self.list_state.offset_mut() = self.max_offset();
         self.list_state
             .select(Some(self.entries.len().saturating_sub(1)));
     }
 
+    // users have different expectations for scrollbar position based on the
+    // input method
     pub fn scroll_max(&self) -> usize {
-        self.entries.len().saturating_sub(1)
+        match self.scroll_measure {
+            ScrollMeasureMode::Mouse => self.max_offset(),
+            ScrollMeasureMode::Keyboard => self.entries.len().saturating_sub(1),
+        }
     }
 
     pub fn scroll(&self) -> usize {
-        self.list_state.selected().unwrap_or(0)
+        match self.scroll_measure {
+            ScrollMeasureMode::Mouse => self.list_state.offset(),
+            ScrollMeasureMode::Keyboard => self
+                .list_state
+                .selected()
+                .unwrap_or(self.list_state.offset()),
+        }
     }
 
     pub fn scroll_by(&mut self, scroll_by: isize) {
-        if self.entries.is_empty() {
+        if self.entries.is_empty() || self.entries.len() < self.visible_lines {
+            *self.list_state.offset_mut() = 0;
             return;
         }
 
         let scroll_by_u = scroll_by.abs() as usize;
-        let current_offset = self.list_state.offset().clone();
 
-        self.list_state.select(None);
+        let current_selection = self.list_state.selected().or(self.selected);
+        let current_offset = self.list_state.offset();
 
-        *self.list_state.offset_mut() = if scroll_by < 0 {
-            current_offset.saturating_sub(scroll_by_u)
-        } else {
-            self.entries
-                .len()
-                .saturating_sub(1)
-                .min(current_offset + scroll_by_u)
-        };
+        let next_offset = match scroll_by < 0 {
+            true => current_offset.saturating_sub(scroll_by_u),
+            false => current_offset.saturating_add(scroll_by_u),
+        }
+        .min(self.max_offset());
+
+        if let Some(current_selection) = current_selection {
+            if current_selection >= (self.visible_lines + next_offset) {
+                self.selected = Some(current_selection);
+                self.list_state.select(None);
+            } else if current_selection < next_offset {
+                self.selected = Some(current_selection);
+                self.list_state.select(None);
+            } else {
+                self.select(current_selection);
+            }
+        }
+
+        *self.list_state.offset_mut() = next_offset;
     }
 
     pub fn select(&mut self, index: usize) {
         if index < self.entries.len() {
             self.list_state.select(Some(index));
         }
+
+        self.update_list_offset();
+    }
+
+    fn max_offset(&self) -> usize {
+        self.entries.len().saturating_sub(self.visible_lines)
+    }
+
+    pub fn set_scroll_measure_mouse(&mut self) {
+        self.scroll_measure = ScrollMeasureMode::Mouse;
+    }
+
+    pub fn set_scroll_measure_key(&mut self) {
+        self.scroll_measure = ScrollMeasureMode::Keyboard;
     }
 }

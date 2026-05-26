@@ -15,9 +15,16 @@ pub enum FeedItemInfo {
     ReadLater,
 }
 
+// @TODO: FeedTreeState and FeedEntryState are pretty similar...
+// how much could we put into a trait for them both to share?
 pub struct FeedTreeState {
     pub treeitems: Vec<FeedItemInfo>,
     pub list_state: ListState,
+
+    // maybe this should be in MainScreen?
+    pub visible_lines: usize,
+
+    selected: Option<usize>,
     last_generation: u64,
     unread_counts: HashMap<(String, String), u16>,
     read_later_count: usize,
@@ -37,6 +44,8 @@ impl FeedTreeState {
             last_generation: u64::MAX,
             unread_counts: HashMap::new(),
             read_later_count: 0,
+            visible_lines: 0,
+            selected: Some(0),
         }
     }
 
@@ -114,7 +123,10 @@ impl FeedTreeState {
 
     pub fn get_selected(&self) -> Option<&FeedItemInfo> {
         if !self.treeitems.is_empty() {
-            let idx = self.list_state.selected().unwrap_or(0);
+            let idx = match self.list_state.selected() {
+                Some(idx) => idx,
+                None => self.selected.unwrap_or(0),
+            };
             let clamped = idx.min(self.treeitems.len().saturating_sub(1));
             Some(&self.treeitems[clamped])
         } else {
@@ -127,8 +139,14 @@ impl FeedTreeState {
             return;
         }
 
-        let selected = self.list_state.selected().unwrap_or(0);
-        if selected < self.treeitems.len().saturating_sub(1) {
+        let selected = self
+            .list_state
+            .selected()
+            .unwrap_or(self.selected.unwrap_or(0));
+
+        if selected >= self.treeitems.len() {
+            self.select_last();
+        } else if selected < self.treeitems.len().saturating_sub(1) {
             self.list_state.select_next();
 
             if self.is_selected_separator() {
@@ -142,15 +160,14 @@ impl FeedTreeState {
             return;
         }
 
-        let selected = self.list_state.selected().unwrap_or(0);
+        let selected = self
+            .list_state
+            .selected()
+            .unwrap_or(self.selected.unwrap_or(0));
+
         if selected >= self.treeitems.len() {
-            self.list_state
-                .select(Some(self.treeitems.len().saturating_sub(1)));
-        }
-
-        let selected = self.list_state.selected().unwrap_or(0);
-
-        if selected > 0 {
+            self.select_last();
+        } else if selected > 0 {
             self.list_state.select_previous();
             if self.is_selected_separator() {
                 self.select_previous();
@@ -163,6 +180,7 @@ impl FeedTreeState {
             return;
         }
 
+        *self.list_state.offset_mut() = 0;
         self.list_state.select_first();
     }
 
@@ -171,6 +189,7 @@ impl FeedTreeState {
             return;
         }
 
+        *self.list_state.offset_mut() = self.max_offset();
         self.list_state
             .select(Some(self.treeitems.len().saturating_sub(1)));
     }
@@ -204,28 +223,47 @@ impl FeedTreeState {
     }
 
     pub fn scroll_by(&mut self, scroll_by: isize) {
-        if self.treeitems.is_empty() {
+        if self.treeitems.is_empty() || self.treeitems.len() < self.visible_lines {
+            *self.list_state.offset_mut() = 0;
             return;
         }
 
         let scroll_by_u = scroll_by.abs() as usize;
-        let current_offset = self.list_state.offset().clone();
 
-        self.list_state.select(None);
+        let current_selection = self
+            .list_state
+            .selected()
+            .unwrap_or(self.selected.unwrap_or(0));
+        let current_offset = self.list_state.offset();
 
-        *self.list_state.offset_mut() = if scroll_by < 0 {
-            current_offset.saturating_sub(scroll_by_u)
+        let next_offset = match scroll_by < 0 {
+            true => current_offset.saturating_sub(scroll_by_u),
+            false => current_offset.saturating_add(scroll_by_u),
+        }
+        .min(self.max_offset());
+
+        if current_selection >= (self.visible_lines + next_offset) {
+            self.selected = Some(current_selection);
+            self.list_state.select(None);
+        } else if current_selection < next_offset {
+            self.selected = Some(current_selection);
+            self.list_state.select(None);
         } else {
-            self.treeitems
-                .len()
-                .saturating_sub(1)
-                .min(current_offset + scroll_by_u)
-        };
+            self.select(current_selection);
+        }
+
+        *self.list_state.offset_mut() = next_offset;
     }
 
     pub fn select(&mut self, index: usize) {
-        if index < self.treeitems.len() {
-            self.list_state.select(Some(index));
+        match self.treeitems.get(index) {
+            Some(FeedItemInfo::Separator) => {}
+            Some(_) => self.list_state.select(Some(index)),
+            _ => {}
         }
+    }
+
+    fn max_offset(&self) -> usize {
+        self.treeitems.len().saturating_sub(self.visible_lines)
     }
 }
