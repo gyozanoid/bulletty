@@ -2,8 +2,9 @@ use std::{cell::RefCell, rc::Rc};
 
 use color_eyre::Result;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
-use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{
     Block, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
 };
@@ -23,6 +24,7 @@ use crate::core::{
 };
 use crate::ui::screens::themedialog::ThemeDialog;
 use crate::ui::screens::urldialog::UrlDialog;
+use crate::ui::tools::mouse::mouse_inside;
 use crate::ui::tools::tuimarkdown;
 
 use super::helpdialog::HelpDialog;
@@ -35,6 +37,9 @@ pub struct ReaderScreen {
     scrollmax: usize,
     viewport_height: usize,
     hooks: Rc<AppHooks>,
+    show_mouse_controls: bool,
+    back_button_rect: Rect,
+    back_button_hovered: bool,
 }
 
 impl ReaderScreen {
@@ -52,6 +57,9 @@ impl ReaderScreen {
             scrollmax: 1,
             viewport_height: 24,
             hooks,
+            show_mouse_controls: false,
+            back_button_rect: Rect::default(),
+            back_button_hovered: false,
         }
     }
 
@@ -247,6 +255,34 @@ impl AppScreen for ReaderScreen {
                 .bg(Color::from_u32(theme.base[1])),
         );
         frame.render_stateful_widget(scrollbar, sizelayout[2], &mut scrollbarstate);
+
+        // placeholder back button (for mouse users)
+        // @TODO: better mouse controls on ReaderScreen
+        if self.show_mouse_controls {
+            let back_button_style = if self.back_button_hovered {
+                Style::new()
+                    .fg(Color::from_u32(theme.base[0x8]))
+                    .bg(Color::from_u32(theme.base[0x8]))
+            } else {
+                Style::new()
+                    .fg(Color::from_u32(theme.base[1]))
+                    .bg(Color::from_u32(theme.base[0]))
+            };
+            let back_button_label_fg = if self.back_button_hovered { 2 } else { 6 };
+            let back_text = Line::from("\u{f053} Back");
+            let back_button_width = 2 + back_text.width() as u16;
+            self.back_button_rect = Rect::new(2, 1, back_button_width, 3);
+
+            let back_button = Paragraph::new(back_text)
+                .block(
+                    Block::new()
+                        .padding(Padding::symmetric(1, 1))
+                        .style(back_button_style),
+                )
+                .style(Style::new().fg(Color::from_u32(theme.base[back_button_label_fg])));
+
+            frame.render_widget(back_button, self.back_button_rect);
+        }
     }
 
     fn handle_event(&mut self, event: Event) -> Result<AppScreenEvent> {
@@ -259,12 +295,21 @@ impl AppScreen for ReaderScreen {
     }
 
     fn handle_mouse(&mut self, event: MouseEvent) -> Result<AppScreenEvent> {
+        self.show_mouse_controls = true;
         match event.kind {
             MouseEventKind::ScrollDown => {
                 self.scrolldown();
             }
             MouseEventKind::ScrollUp => {
                 self.scrollup();
+            }
+            MouseEventKind::Moved => {
+                self.back_button_hovered = mouse_inside(&event, &self.back_button_rect)
+            }
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                if mouse_inside(&event, &self.back_button_rect) {
+                    return Ok(AppScreenEvent::ExitState);
+                }
             }
             _ => {}
         }
@@ -275,6 +320,7 @@ impl AppScreen for ReaderScreen {
         &mut self,
         key: crossterm::event::KeyEvent,
     ) -> color_eyre::eyre::Result<AppScreenEvent> {
+        self.show_mouse_controls = false;
         match (key.modifiers, key.code) {
             (_, KeyCode::Esc | KeyCode::Char('q'))
             | (KeyModifiers::CONTROL, KeyCode::Char('c') | KeyCode::Char('C')) => {
