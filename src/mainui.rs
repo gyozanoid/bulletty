@@ -21,6 +21,14 @@ pub fn run_main_ui(config: &Config) -> color_eyre::Result<()> {
         && use_mouse
     {
         execute!(stdout(), EnableMouseCapture).ok();
+
+        // substitue hook to DisableMouseCapture on panic
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            execute!(stdout(), DisableMouseCapture).ok();
+            ratatui::restore();
+            hook(info);
+        }));
     }
 
     let mut app = app::App::new(config);
