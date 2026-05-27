@@ -197,14 +197,12 @@ impl FeedEntryState {
         }
     }
 
+    // find the best list offset for showing the current selection
     fn update_list_offset(&mut self) {
-        // still overshooting the offset when going to first and last
-        // first is one too high,
-
         let current_offset = self.list_state.offset();
-        let current_selection = self.list_state.selected();
+        let visible_selection = self.list_state.selected();
 
-        let mut next_offset = match current_selection {
+        let mut next_offset = match visible_selection {
             Some(idx) if idx < current_offset => idx,
             Some(idx)
                 if idx > current_offset.saturating_add(self.visible_lines.saturating_sub(1)) =>
@@ -216,62 +214,47 @@ impl FeedEntryState {
         .min(self.max_offset());
 
         // offset "jump" behavior (i.e. select_next() after mousewheel scroll)
-        // center the selection, favor the higher when visible_lines is even
+        // center the selection and favor the higher line when visible_lines is even
         if next_offset.abs_diff(current_offset) > 1
-            && next_offset > self.visible_lines.saturating_div(2)
+            && let Some(idx) = visible_selection
         {
-            if let Some(idx) = current_selection {
-                next_offset = idx.saturating_sub(self.visible_lines.saturating_div(2));
-                if next_offset > self.visible_lines.saturating_sub(1) {
-                    next_offset = next_offset
-                        .saturating_add(self.visible_lines.saturating_add(1) % 2)
-                        .min(self.max_offset());
-                }
+            next_offset = idx.saturating_sub(self.visible_lines.saturating_div(2));
+            if next_offset > 0 {
+                // make sure we're centered with odd # of visible_lines
+                next_offset = next_offset.saturating_add(self.visible_lines.saturating_add(1) % 2);
             }
-        };
+        }
 
-        *self.list_state.offset_mut() = next_offset;
+        *self.list_state.offset_mut() = next_offset.min(self.max_offset());
     }
 
     pub fn select_next(&mut self) {
-        if self.entries.is_empty() {
-            return;
+        let selected = self.list_state.selected().or(self.selected);
+
+        match selected {
+            Some(idx) if matches!(self.entries.get(idx + 1), Some(_)) => {
+                self.list_state.select(selected);
+                self.list_state.select_next();
+                self.update_list_offset();
+            }
+            _ => {
+                self.select_last();
+            }
         }
-
-        let selected = self
-            .list_state
-            .selected()
-            .unwrap_or(self.selected.unwrap_or(0));
-
-        if selected >= self.entries.len() {
-            self.select_last();
-            return;
-        }
-
-        // List::list_state.offset is retained, but gets adjusted temporarily
-        // on render to get the selected item in view
-
-        self.list_state.select(Some(selected));
-        self.list_state.select_next();
-        self.update_list_offset();
     }
 
     pub fn select_previous(&mut self) {
-        if self.entries.is_empty() {
-            return;
-        }
+        let selected = self.list_state.selected().or(self.selected);
 
-        let selected = self
-            .list_state
-            .selected()
-            .unwrap_or(self.selected.unwrap_or(0));
-
-        if selected >= self.entries.len() {
-            self.select_last();
-        } else {
-            self.list_state.select(Some(selected));
-            self.list_state.select_previous();
-            self.update_list_offset();
+        match selected {
+            Some(idx) if matches!(self.entries.get(idx.saturating_sub(1)), Some(_)) => {
+                self.list_state.select(selected);
+                self.list_state.select_previous();
+                self.update_list_offset();
+            }
+            _ => {
+                self.select_last();
+            }
         }
     }
 
@@ -289,9 +272,9 @@ impl FeedEntryState {
             return;
         }
 
-        *self.list_state.offset_mut() = self.max_offset();
         self.list_state
             .select(Some(self.entries.len().saturating_sub(1)));
+        self.update_list_offset();
     }
 
     // users have different expectations for scrollbar position based on the
@@ -346,7 +329,7 @@ impl FeedEntryState {
     }
 
     pub fn select(&mut self, index: usize) {
-        if index < self.entries.len() {
+        if let Some(_) = self.entries.get(index) {
             self.list_state.select(Some(index));
         }
 

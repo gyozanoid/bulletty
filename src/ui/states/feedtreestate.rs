@@ -24,10 +24,10 @@ pub struct FeedTreeState {
     // maybe this should be in MainScreen?
     pub visible_lines: usize,
 
-    selected: Option<usize>,
     last_generation: u64,
     unread_counts: HashMap<(String, String), u16>,
     read_later_count: usize,
+    selected: Option<usize>,
 }
 
 impl Default for FeedTreeState {
@@ -122,55 +122,82 @@ impl FeedTreeState {
     }
 
     pub fn get_selected(&self) -> Option<&FeedItemInfo> {
-        if !self.treeitems.is_empty() {
-            let idx = match self.list_state.selected() {
-                Some(idx) => idx,
-                None => self.selected.unwrap_or(0),
-            };
-            let clamped = idx.min(self.treeitems.len().saturating_sub(1));
-            Some(&self.treeitems[clamped])
-        } else {
-            None
+        if let Some(idx) = self.list_state.selected().or(self.selected)
+            && let Some(entry) = self.treeitems.get(idx)
+        {
+            return Some(entry);
         }
+
+        None
+    }
+
+    // find the best list offset for showing the current selection
+    fn update_list_offset(&mut self) {
+        let current_offset = self.list_state.offset();
+        let visible_selection = self.list_state.selected();
+
+        let mut next_offset = match visible_selection {
+            Some(idx) if idx < current_offset => idx,
+            Some(idx)
+                if idx > current_offset.saturating_add(self.visible_lines.saturating_sub(1)) =>
+            {
+                idx.saturating_sub(self.visible_lines.saturating_sub(1))
+            }
+            _ => current_offset,
+        }
+        .min(self.max_offset());
+
+        // offset "jump" behavior (i.e. select_next() after mousewheel scroll)
+        // center the selection and favor the higher line when visible_lines is even
+        if next_offset.abs_diff(current_offset) > 1
+            && let Some(idx) = visible_selection
+        {
+            next_offset = idx.saturating_sub(self.visible_lines.saturating_div(2));
+            if next_offset > 0 {
+                // make sure we're centered with odd # of visible_lines
+                next_offset = next_offset.saturating_add(self.visible_lines.saturating_add(1) % 2);
+            }
+        }
+
+        *self.list_state.offset_mut() = next_offset.min(self.max_offset());
     }
 
     pub fn select_next(&mut self) {
-        if self.treeitems.is_empty() {
-            return;
-        }
+        let selected = self.list_state.selected().or(self.selected);
 
-        let selected = self
-            .list_state
-            .selected()
-            .unwrap_or(self.selected.unwrap_or(0));
+        match selected {
+            Some(idx) if matches!(self.treeitems.get(idx + 1), Some(_)) => {
+                self.list_state.select(selected);
+                self.list_state.select_next();
 
-        if selected >= self.treeitems.len() {
-            self.select_last();
-        } else if selected < self.treeitems.len().saturating_sub(1) {
-            self.list_state.select_next();
+                if self.is_selected_separator() {
+                    self.select_next();
+                }
 
-            if self.is_selected_separator() {
-                self.select_next();
+                self.update_list_offset();
+            }
+            _ => {
+                self.select_last();
             }
         }
     }
 
     pub fn select_previous(&mut self) {
-        if self.treeitems.is_empty() {
-            return;
-        }
+        let selected = self.list_state.selected().or(self.selected);
 
-        let selected = self
-            .list_state
-            .selected()
-            .unwrap_or(self.selected.unwrap_or(0));
+        match selected {
+            Some(idx) if matches!(self.treeitems.get(idx.saturating_sub(1)), Some(_)) => {
+                self.list_state.select(selected);
+                self.list_state.select_previous();
 
-        if selected >= self.treeitems.len() {
-            self.select_last();
-        } else if selected > 0 {
-            self.list_state.select_previous();
-            if self.is_selected_separator() {
-                self.select_previous();
+                if self.is_selected_separator() {
+                    self.select_previous();
+                }
+
+                self.update_list_offset();
+            }
+            _ => {
+                self.select_last();
             }
         }
     }
@@ -180,8 +207,8 @@ impl FeedTreeState {
             return;
         }
 
-        *self.list_state.offset_mut() = 0;
         self.list_state.select_first();
+        self.update_list_offset();
     }
 
     pub fn select_last(&mut self) {
@@ -189,26 +216,28 @@ impl FeedTreeState {
             return;
         }
 
-        *self.list_state.offset_mut() = self.max_offset();
         self.list_state
             .select(Some(self.treeitems.len().saturating_sub(1)));
+        self.update_list_offset();
     }
 
     pub fn select_next_category(&mut self) {
-        let current = self.list_state.selected().unwrap_or(0);
+        let current = self.list_state.selected().or(self.selected).unwrap_or(0);
         for (i, item) in self.treeitems.iter().enumerate().skip(current + 1) {
             if matches!(item, FeedItemInfo::Category(_) | FeedItemInfo::ReadLater) {
                 self.list_state.select(Some(i));
+                self.update_list_offset();
                 return;
             }
         }
     }
 
     pub fn select_previous_category(&mut self) {
-        let current = self.list_state.selected().unwrap_or(0);
+        let current = self.list_state.selected().or(self.selected).unwrap_or(0);
         for (i, item) in self.treeitems.iter().enumerate().take(current).rev() {
             if matches!(item, FeedItemInfo::Category(_) | FeedItemInfo::ReadLater) {
                 self.list_state.select(Some(i));
+                self.update_list_offset();
                 return;
             }
         }
@@ -230,10 +259,7 @@ impl FeedTreeState {
 
         let scroll_by_u = scroll_by.abs() as usize;
 
-        let current_selection = self
-            .list_state
-            .selected()
-            .unwrap_or(self.selected.unwrap_or(0));
+        let current_selection = self.list_state.selected().or(self.selected);
         let current_offset = self.list_state.offset();
 
         let next_offset = match scroll_by < 0 {
@@ -242,14 +268,16 @@ impl FeedTreeState {
         }
         .min(self.max_offset());
 
-        if current_selection >= (self.visible_lines + next_offset) {
-            self.selected = Some(current_selection);
-            self.list_state.select(None);
-        } else if current_selection < next_offset {
-            self.selected = Some(current_selection);
-            self.list_state.select(None);
-        } else {
-            self.select(current_selection);
+        if let Some(current_selection) = current_selection {
+            if current_selection >= (self.visible_lines + next_offset) {
+                self.selected = Some(current_selection);
+                self.list_state.select(None);
+            } else if current_selection < next_offset {
+                self.selected = Some(current_selection);
+                self.list_state.select(None);
+            } else {
+                self.select(current_selection);
+            }
         }
 
         *self.list_state.offset_mut() = next_offset;
@@ -261,6 +289,8 @@ impl FeedTreeState {
             Some(_) => self.list_state.select(Some(index)),
             _ => {}
         }
+
+        self.update_list_offset();
     }
 
     fn max_offset(&self) -> usize {
