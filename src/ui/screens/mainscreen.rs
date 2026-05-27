@@ -42,7 +42,7 @@ const FEED_ENTRIES_PADDING: (u16, u16) = (2, 1);
 
 // feed entry list items are rendered in FeedEntryState, should this go there?
 // or should we compute it from the output of FeedEntryState::get_items?
-const FEED_ENTRIES_HEIGHT: u16 = 5; 
+const FEED_ENTRIES_HEIGHT: u16 = 5;
 
 // @TODO: add config option for double click speed
 const DOUBLE_CLICK_TIME: u32 = 250_000_000;
@@ -164,6 +164,7 @@ impl MainScreen {
             .appearance
             .main_screen_tree_width
             .saturating_add(2)
+            .max(30)
             .min(100);
         l.settings.appearance.save()
     }
@@ -175,6 +176,7 @@ impl MainScreen {
             .appearance
             .main_screen_tree_width
             .saturating_sub(2)
+            .max(30)
             .min(100);
         l.settings.appearance.save()
     }
@@ -188,8 +190,8 @@ impl MainScreen {
             .main_screen_tree_width;
 
         self.layout = Layout::horizontal([
-            Constraint::Min(treewidth),
-            Constraint::Percentage(85),
+            Constraint::Length(treewidth),
+            Constraint::Fill(1),
             Constraint::Length(1),
         ])
         .split(area)
@@ -198,8 +200,7 @@ impl MainScreen {
 
 impl AppScreen for MainScreen {
     fn start(&mut self) {
-        // @TODO: uncomment this before creating PR!
-        // self.library.borrow_mut().start_updater();
+        self.library.borrow_mut().start_updater();
     }
 
     fn quit(&mut self) {}
