@@ -86,6 +86,14 @@ impl FeedTreeState {
                 self.read_later_count = 0;
             }
         }
+
+        // move selection to the last item if the list gets truncated,
+        // most likely because Read Later became empty
+        if let Some(idx) = self.list_state.selected().or(self.selected)
+            && idx >= self.treeitems.len()
+        {
+            self.select_last();
+        }
     }
 
     pub fn get_items(&self) -> Vec<ListItem<'_>> {
