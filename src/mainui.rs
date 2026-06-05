@@ -17,7 +17,9 @@ pub fn run_main_ui(config: &Config) -> color_eyre::Result<()> {
 
     let terminal = ratatui::init();
 
-    if config.use_mouse {
+    if let Some(use_mouse) = config.use_mouse
+        && use_mouse
+    {
         execute!(stdout(), EnableMouseCapture).ok();
 
         // substitue hook to DisableMouseCapture on panic
