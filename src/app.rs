@@ -238,9 +238,9 @@ impl App {
                 })?;
 
                 // Checking the dialog or the state events
-                let event_available =
-                    crossterm::event::poll(self.event_poll_timeout).unwrap_or(true);
-                if event_available {
+                if let Ok(event_available) = crossterm::event::poll(self.event_poll_timeout)
+                    && event_available
+                {
                     let terminal_event = crossterm::event::read()?;
 
                     #[cfg(unix)]

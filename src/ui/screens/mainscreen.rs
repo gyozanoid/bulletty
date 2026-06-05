@@ -1,7 +1,10 @@
+use std::time::{Duration, Instant};
 use std::{cell::RefCell, rc::Rc};
 
 use color_eyre::Result;
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
@@ -28,10 +31,22 @@ use crate::{
             feedentrystate::FeedEntryState,
             feedtreestate::{FeedItemInfo, FeedTreeState},
         },
+        tools::mouse::find_mouse,
     },
 };
 
 use super::helpdialog::HelpDialog;
+
+// feels like these could be options in the theme system
+const FEED_TREE_PADDING: u16 = 2;
+const FEED_ENTRIES_PADDING: (u16, u16) = (2, 1);
+
+// feed entry list items are rendered in FeedEntryState, should this go there?
+// or should we compute it from the output of FeedEntryState::get_items?
+const FEED_ENTRIES_HEIGHT: u16 = 5;
+
+// @TODO: add config option for double click speed
+const DOUBLE_CLICK_TIME: u32 = 250_000_000;
 
 #[derive(PartialEq, Eq)]
 enum MainInputState {
@@ -46,6 +61,7 @@ pub struct MainScreen {
     inputstate: MainInputState,
     hooks: Rc<AppHooks>,
     config: Rc<Config>,
+    layout: Rc<[Rect]>,
 }
 
 impl MainScreen {
@@ -57,6 +73,7 @@ impl MainScreen {
             inputstate: MainInputState::Menu,
             hooks,
             config,
+            layout: Rc::default(),
         }
     }
 
@@ -150,6 +167,7 @@ impl MainScreen {
             .appearance
             .main_screen_tree_width
             .saturating_add(2)
+            .max(30)
             .min(100);
         l.settings.appearance.save()
     }
@@ -161,8 +179,25 @@ impl MainScreen {
             .appearance
             .main_screen_tree_width
             .saturating_sub(2)
+            .max(30)
             .min(100);
         l.settings.appearance.save()
+    }
+
+    fn calculate_layout(&mut self, area: Rect) {
+        let treewidth = self
+            .library
+            .borrow()
+            .settings
+            .appearance
+            .main_screen_tree_width;
+
+        self.layout = Layout::horizontal([
+            Constraint::Length(treewidth),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .split(area)
     }
 }
 
@@ -187,29 +222,20 @@ impl AppScreen for MainScreen {
             library.settings.get_theme().unwrap().clone()
         };
 
-        let treewidth = self
-            .library
-            .borrow()
-            .settings
-            .appearance
-            .main_screen_tree_width;
-
-        let chunks = Layout::horizontal([
-            Constraint::Min(treewidth),
-            Constraint::Percentage(85),
-            Constraint::Length(1),
-        ])
-        .split(area);
+        self.calculate_layout(area);
 
         // Feed tree
         self.feedtreestate.update(&mut self.library.borrow_mut());
+        self.feedtreestate.visible_lines =
+            usize::from(self.layout[0].height.saturating_sub(FEED_TREE_PADDING * 2));
+        // .min(self.feedtreestate.treeitems.len());
 
         let (treestyle, treeselectionstyle) = if self.inputstate == MainInputState::Menu {
             (
                 Block::default()
-                    .style(Style::default().fg(Color::from_u32(theme.base[5])))
+                    .fg(Color::from_u32(theme.base[5]))
                     .bg(Color::from_u32(theme.base[1]))
-                    .padding(Padding::new(2, 2, 2, 2)),
+                    .padding(Padding::uniform(FEED_TREE_PADDING)),
                 Style::default()
                     .fg(Color::from_u32(theme.base[0x2]))
                     .bg(Color::from_u32(theme.base[0x8])),
@@ -217,9 +243,9 @@ impl AppScreen for MainScreen {
         } else {
             (
                 Block::default()
-                    .style(Style::default().fg(Color::from_u32(theme.base[4])))
+                    .fg(Color::from_u32(theme.base[4]))
                     .bg(Color::from_u32(theme.base[1]))
-                    .padding(Padding::new(2, 2, 2, 2)),
+                    .padding(Padding::uniform(FEED_TREE_PADDING)),
                 Style::default()
                     .fg(Color::from_u32(theme.base[5]))
                     .bg(Color::from_u32(theme.base[2])),
@@ -230,14 +256,21 @@ impl AppScreen for MainScreen {
             .block(treestyle)
             .highlight_style(treeselectionstyle);
 
-        let mut treestate = self.feedtreestate.listatate;
-        frame.render_stateful_widget(treelist, chunks[0], &mut treestate);
+        let mut treestate = self.feedtreestate.list_state;
+        frame.render_stateful_widget(treelist, self.layout[0], &mut treestate);
 
         // The feed entries
         self.feedentrystate
             .update(&mut self.library.borrow_mut(), &self.feedtreestate);
+        self.feedentrystate.visible_lines = usize::from(
+            self.layout[0]
+                .height
+                .saturating_sub(FEED_ENTRIES_PADDING.1 * 2)
+                / FEED_ENTRIES_HEIGHT,
+        );
+        // .min(self.feedentrystate.entries.len());
 
-        let mut entryliststate = self.feedentrystate.listatate;
+        let mut entryliststate = self.feedentrystate.list_state;
 
         let entryselectionstyle = if self.inputstate == MainInputState::Content {
             Style::default()
@@ -251,11 +284,14 @@ impl AppScreen for MainScreen {
             .block(
                 Block::default()
                     .style(Style::default().bg(Color::from_u32(theme.base[2])))
-                    .padding(Padding::new(2, 2, 1, 1)),
+                    .padding(Padding::symmetric(
+                        FEED_ENTRIES_PADDING.0,
+                        FEED_ENTRIES_PADDING.1,
+                    )),
             )
             .highlight_style(entryselectionstyle);
 
-        frame.render_stateful_widget(list_widget, chunks[1], &mut entryliststate);
+        frame.render_stateful_widget(list_widget, self.layout[1], &mut entryliststate);
 
         // Scrollbar
         let mut scrollbarstate = ScrollbarState::new(self.feedentrystate.scroll_max())
@@ -265,19 +301,88 @@ impl AppScreen for MainScreen {
                 .fg(Color::from_u32(theme.base[3]))
                 .bg(Color::from_u32(theme.base[2])),
         );
-        frame.render_stateful_widget(scrollbar, chunks[2], &mut scrollbarstate);
+        frame.render_stateful_widget(scrollbar, self.layout[2], &mut scrollbarstate);
     }
 
     fn handle_event(&mut self, event: Event) -> Result<AppScreenEvent> {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_keypress(key),
-            Event::Mouse(_) => Ok(AppScreenEvent::None),
+            Event::Mouse(mouse_event) => self.handle_mouse(mouse_event),
             Event::Resize(_, _) => Ok(AppScreenEvent::None),
             _ => Ok(AppScreenEvent::None),
         }
     }
 
+    fn handle_mouse(&mut self, mouse_event: MouseEvent) -> Result<AppScreenEvent> {
+        match find_mouse(&mouse_event, &self.layout) {
+            // would it be clearer to have a enum for layout slots/chunks?
+            // this feature branch is getting to be a pretty big diff already...
+            Some(0) /*Feed List*/ => {
+                match mouse_event.kind {
+                    MouseEventKind::ScrollDown => { self.feedtreestate.scroll_by(1); },
+                    MouseEventKind::ScrollUp => { self.feedtreestate.scroll_by(-1); },
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        self.inputstate = MainInputState::Menu;
+                        let click_row = mouse_event.row.saturating_sub(self.layout[0].top() + FEED_TREE_PADDING);
+                        let current_offset = self.feedtreestate.list_state.offset();
+                        self.feedtreestate.select(current_offset + usize::from(click_row));
+                    },
+                    _ => {},
+                }
+            },
+            Some(1) /*Feed Entries List*/ => {
+                self.feedentrystate.set_scroll_measure_mouse();
+                match mouse_event.kind {
+                    MouseEventKind::ScrollDown => { self.feedentrystate.scroll_by(1); },
+                    MouseEventKind::ScrollUp => { self.feedentrystate.scroll_by(-1); },
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        // @TODO: this is a lot, move it somewhere else!
+                        self.inputstate = MainInputState::Content;
+
+                        let click_row = mouse_event.row
+                                .saturating_sub(self.layout[1].top() + FEED_ENTRIES_PADDING.1)
+                                .saturating_div(FEED_ENTRIES_HEIGHT);
+                        let current_offset = self.feedentrystate.list_state.offset();
+                        let new_selected = current_offset + usize::from(click_row);
+
+                        // @TODO: maybe just check for double click by testing the cell coords instead? then we can make it more reusable
+                        if let Some(last_click) = self.feedentrystate.last_click {
+                            let double_click = new_selected == self.feedentrystate.list_state.selected().unwrap_or(0);
+                            let double_click_time = Instant::now().duration_since(last_click);
+
+                            if double_click && double_click_time < Duration::new(0, DOUBLE_CLICK_TIME) {
+                                // duplicated from key handler for enter below
+                                // @TODO: build MainScreen::open_post
+                                if let Some(entry) = self.feedentrystate.get_selected() {
+                                    self.library.borrow_mut().set_entry_seen(&entry);
+                                    self.feedentrystate.set_current_read();
+
+                                    return Ok(AppScreenEvent::ChangeState(Box::new(ReaderScreen::new(
+                                        self.library.clone(),
+                                        self.feedentrystate.entries.clone(),
+                                        self.feedentrystate.list_state.selected().unwrap_or(0),
+                                        self.hooks.clone(),
+                                    ))));
+                                }
+                            }
+                        }
+
+                        self.feedentrystate.select(new_selected);
+                        self.feedentrystate.last_click = Some(Instant::now());
+                    },
+                    _ => {},
+                }
+            },
+            Some(2) /*Feed Entries Scrollbar*/ => {
+                // @TODO: somebody out there doesn't have a scroll wheel, so i guess we better do something here
+            },
+            _ => {},
+        }
+        Ok(AppScreenEvent::None)
+    }
+
     fn handle_keypress(&mut self, key: crossterm::event::KeyEvent) -> Result<AppScreenEvent> {
+        self.feedentrystate.set_scroll_measure_key();
         match self.inputstate {
             MainInputState::Menu => match (key.modifiers, key.code) {
                 (_, KeyCode::Esc | KeyCode::Char('q'))
@@ -331,6 +436,17 @@ impl AppScreen for MainScreen {
                 (_, KeyCode::Char('?')) => Ok(AppScreenEvent::OpenDialog(Box::new(
                     HelpDialog::new(self.library.clone(), self.get_full_instructions()),
                 ))),
+
+                // @TODO: remember to remove these!
+                (_, KeyCode::Char('J')) => {
+                    self.feedtreestate.scroll_by(1);
+                    Ok(AppScreenEvent::None)
+                }
+                (_, KeyCode::Char('K')) => {
+                    self.feedtreestate.scroll_by(-1);
+                    Ok(AppScreenEvent::None)
+                }
+
                 _ => Ok(AppScreenEvent::None),
             },
             MainInputState::Content => match (key.modifiers, key.code) {
@@ -370,7 +486,7 @@ impl AppScreen for MainScreen {
                         Ok(AppScreenEvent::ChangeState(Box::new(ReaderScreen::new(
                             self.library.clone(),
                             self.feedentrystate.entries.clone(),
-                            self.feedentrystate.listatate.selected().unwrap_or(0),
+                            self.feedentrystate.list_state.selected().unwrap_or(0),
                             self.hooks.clone(),
                         ))))
                     } else {

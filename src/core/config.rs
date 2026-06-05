@@ -11,6 +11,8 @@ use crate::core::hooks::AppHooks;
 pub struct Config {
     pub datapath: PathBuf,
     #[serde(default)]
+    pub use_mouse: bool,
+    #[serde(default)]
     pub hooks: Option<AppHooks>,
     #[serde(default)]
     pub tui_auto_update: Option<bool>,
